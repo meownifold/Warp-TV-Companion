@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">WARP TV Companion</string>
+    <string name="accessibility_service_label">WARP TV Companion control</string>
+    <string name="accessibility_service_description">Controls the official Cloudflare WARP switch when you request it from WARP TV Companion.</string>
+</resources>

@@ -1,0 +1,8 @@
+<resources>
+    <color name="background">#101318</color>
+    <color name="surface">#252B35</color>
+    <color name="primary">#F48120</color>
+    <color name="connected">#55D187</color>
+    <color name="disconnected">#AEB7C4</color>
+    <color name="white">#FFFFFF</color>
+</resources>
