@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.widget.Toast
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -29,6 +30,8 @@ class WarpAccessibilityService : AccessibilityService() {
     private var gestureInFlight = false
     private var disableOptionStableSince = 0L
     private var lastDisableOptionBounds: android.graphics.Rect? = null
+    private var retryCount = 0
+    private var retryScheduled = false
 
     override fun onServiceConnected() {
         instance = this
@@ -54,6 +57,8 @@ class WarpAccessibilityService : AccessibilityService() {
         // repeatedly while Cloudflare is opening.
         if (state != WarpActionState.IDLE) return false
         targetVpnOn = turnOn
+        retryCount = 0
+        retryScheduled = false
         wholeActionStartedAt = SystemClock.uptimeMillis()
         transition(WarpActionState.OPENING_CLOUDFLARE)
         Log.i(WarpConstants.LOG_TAG, "Cloudflare launch requested; target=${if (turnOn) "on" else "off"}")
@@ -114,14 +119,20 @@ class WarpAccessibilityService : AccessibilityService() {
                 onCancelled = {
                     handler.post {
                         if (state == WarpActionState.CLICKING_SWITCH) {
-                            fail("Touch gesture on WARP switch was cancelled.")
+                            scheduleRetry(
+                                "WARP switch gesture was cancelled.",
+                                WarpActionState.WAITING_FOR_SWITCH
+                            )
                         }
                     }
                 }
             )
 
             if (!accepted) {
-                fail("dispatchGesture rejected WARP switch tap.")
+                scheduleRetry(
+                    "dispatchGesture rejected WARP switch tap.",
+                    WarpActionState.WAITING_FOR_SWITCH
+                )
             }
 
             return
@@ -149,12 +160,20 @@ class WarpAccessibilityService : AccessibilityService() {
                     }
                 },
                 onCancelled = {
-                    handler.post { fail("Coordinate gesture fallback was cancelled.") }
+                    handler.post {
+                        scheduleRetry(
+                            "Coordinate gesture fallback was cancelled.",
+                            WarpActionState.WAITING_FOR_SWITCH
+                        )
+                    }
                 }
             )
 
             if (!accepted) {
-                fail("Coordinate gesture fallback rejected.")
+                scheduleRetry(
+                    "Coordinate gesture fallback rejected.",
+                    WarpActionState.WAITING_FOR_SWITCH
+                )
             }
 
             return
@@ -199,14 +218,20 @@ class WarpAccessibilityService : AccessibilityService() {
                 onCancelled = {
                     handler.post {
                         if (state == WarpActionState.CLICKING_DISABLE_FOREVER) {
-                            fail("Touch gesture on disable option was cancelled.")
+                            scheduleRetry(
+                                "Disable option gesture was cancelled.",
+                                WarpActionState.WAITING_FOR_DISABLE_DIALOG
+                            )
                         }
                     }
                 }
             )
 
             if (!accepted) {
-                fail("dispatchGesture rejected disable option tap.")
+                scheduleRetry(
+                    "dispatchGesture rejected disable option tap.",
+                    WarpActionState.WAITING_FOR_DISABLE_DIALOG
+                )
             }
 
             return
@@ -226,12 +251,20 @@ class WarpAccessibilityService : AccessibilityService() {
                     }
                 },
                 onCancelled = {
-                    handler.post { fail("Disable coordinate gesture fallback was cancelled.") }
+                    handler.post {
+                        scheduleRetry(
+                            "Disable coordinate gesture fallback was cancelled.",
+                            WarpActionState.WAITING_FOR_DISABLE_DIALOG
+                        )
+                    }
                 }
             )
 
             if (!accepted) {
-                fail("Disable coordinate gesture fallback rejected.")
+                scheduleRetry(
+                    "Disable coordinate gesture fallback rejected.",
+                    WarpActionState.WAITING_FOR_DISABLE_DIALOG
+                )
             }
 
             return
@@ -261,6 +294,11 @@ class WarpAccessibilityService : AccessibilityService() {
             )
             state = WarpActionState.SUCCESS
             returnToCompanion(true, if (targetVpnOn) "Connected" else "Disconnected")
+        } else if (stageElapsed() > RESPONSE_CHECK_MS && shouldRetryForNoResponse()) {
+            scheduleRetry(
+                "Cloudflare did not react to the previous touch.",
+                WarpActionState.WAITING_FOR_SWITCH
+            )
         } else if (stageElapsed() > VPN_TIMEOUT_MS) {
             fail(
                 if (targetVpnOn) {
@@ -270,6 +308,47 @@ class WarpAccessibilityService : AccessibilityService() {
                 }
             )
         }
+    }
+
+    /**
+     * Retry only when the previous gesture produced no observable UI change.
+     * Once the switch has changed state, Cloudflare may legitimately spend time
+     * connecting or disconnecting, so waiting is safer than tapping again.
+     */
+    private fun shouldRetryForNoResponse(): Boolean {
+        val switch = findWarpSwitch() ?: return false
+        return switch.isChecked != targetVpnOn
+    }
+
+    /**
+     * A rejected gesture injects no touch, and an unchanged switch confirms that
+     * a completed gesture had no effect. Both cases can safely use a bounded
+     * retry without risking an unintended extra toggle.
+     */
+    private fun scheduleRetry(reason: String, nextState: WarpActionState) {
+        if (retryScheduled || state == WarpActionState.IDLE || state == WarpActionState.ERROR) return
+        if (retryCount >= MAX_RETRY_COUNT) {
+            fail("$reason Retry limit reached.")
+            return
+        }
+
+        retryCount++
+        retryScheduled = true
+        state = WarpActionState.WAITING_TO_RETRY
+        handler.removeCallbacks(processStep)
+        Log.w(WarpConstants.LOG_TAG, "$reason Retrying in ${RETRY_DELAY_MS / 1_000}s ($retryCount/$MAX_RETRY_COUNT)")
+        Toast.makeText(
+            this,
+            "WARP 操作未响应，${RETRY_DELAY_MS / 1_000} 秒后重试（$retryCount/$MAX_RETRY_COUNT）",
+            Toast.LENGTH_LONG
+        ).show()
+
+        handler.postDelayed({
+            if (state != WarpActionState.WAITING_TO_RETRY) return@postDelayed
+            retryScheduled = false
+            transition(nextState)
+            handler.post(processStep)
+        }, RETRY_DELAY_MS)
     }
 
     private fun isCloudflareConnectedUi(): Boolean {
@@ -465,7 +544,10 @@ class WarpAccessibilityService : AccessibilityService() {
         private const val FALLBACK_AFTER_MS = 2_500L
         private const val STAGE_TIMEOUT_MS = 5_000L
         private const val VPN_TIMEOUT_MS = 30_000L
-        private const val TOTAL_TIMEOUT_MS = 45_000L
+        private const val RESPONSE_CHECK_MS = 5_000L
+        private const val RETRY_DELAY_MS = 5_000L
+        private const val MAX_RETRY_COUNT = 3
+        private const val TOTAL_TIMEOUT_MS = 75_000L
 
         @Volatile private var instance: WarpAccessibilityService? = null
 

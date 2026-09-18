@@ -18,6 +18,7 @@
 - 节点中心动态点击，并为已验证的 1080p Sony BRAVIA 提供坐标 fallback
 - 等待 Cloudflare 界面明确显示“已连接”后才判定开启成功
 - 操作锁、分阶段超时、手势完成回调和错误提示
+- 对系统拒绝手势或点击后无 UI 响应的情况，显示系统提示并在 5 秒后有限重试（最多 3 次）
 - 无广告、无分析、无网络请求、无需 root、无需 Shizuku、无需常驻 ADB
 
 ## 已验证环境
@@ -82,6 +83,8 @@ app/build/outputs/apk/debug/app-debug.apk
 ```
 
 `local.properties` 不提交到仓库。Android Studio 通常会自动生成；命令行构建时也可以设置 `ANDROID_HOME` 或 `ANDROID_SDK_ROOT`。
+
+当前开发版本：`1.1.0`。
 
 ## 安装
 
