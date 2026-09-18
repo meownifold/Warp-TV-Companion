@@ -144,6 +144,10 @@ class WarpAccessibilityService : AccessibilityService() {
             Log.w(WarpConstants.LOG_TAG, "launchSwitch not found; using known coordinate fallback")
 
             // Fixed coordinates are a last resort for the verified 1080p TV UI.
+            // Mark the gesture in progress before dispatching it. Otherwise a
+            // window-content event arriving during the async callback can run
+            // processSwitch() again and send a second tap to the same position.
+            transition(WarpActionState.CLICKING_SWITCH)
             val accepted = tap(
                 WarpUiFallback.SWITCH_X,
                 WarpUiFallback.SWITCH_Y,
